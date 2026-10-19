@@ -254,19 +254,19 @@ jobs:
           }
           $report | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $out "BACKUP_VERIFICATION.json")
 
-          @"
-# VoiceStudio 0.5.7 backup
-
-Pinned upstream: debpalash/VoiceStudio
-Commit: $env:UPSTREAM_COMMIT
-Version: $env:VERSION
-
-This snapshot preserves the full Git history, a clean pinned source archive, the omnivoice-gallery submodule history, the Bun cache used for the Windows build, exact dependency lockfiles, and a Windows x64 Electron installer built and smoke-tested from the pinned source.
-
-The installer is an unsigned backup build, not an official signed upstream release.
-
-Model weights and the complete Python/CUDA runtime are intentionally not redistributed. VoiceStudio's model inventory has separate licences and some downloads require Hugging Face access or explicit acceptance. See BACKUP_VERIFICATION.json for exact scope.
-"@ | Set-Content -Encoding utf8 (Join-Path $out "README-BACKUP.md")
+          @(
+            "# VoiceStudio 0.5.7 backup",
+            "",
+            "Pinned upstream: debpalash/VoiceStudio",
+            "Commit: $env:UPSTREAM_COMMIT",
+            "Version: $env:VERSION",
+            "",
+            "This snapshot preserves the full Git history, a clean pinned source archive, the omnivoice-gallery submodule history, the Bun cache used for the Windows build, exact dependency lockfiles, and a Windows x64 Electron installer built and smoke-tested from the pinned source.",
+            "",
+            "The installer is an unsigned backup build, not an official signed upstream release.",
+            "",
+            "Model weights and the complete Python/CUDA runtime are intentionally not redistributed. VoiceStudio's model inventory has separate licences and some downloads require Hugging Face access or explicit acceptance. See BACKUP_VERIFICATION.json for exact scope."
+          ) | Set-Content -Encoding utf8 (Join-Path $out "README-BACKUP.md")
 
       - name: Generate SHA-256 manifest
         shell: pwsh
