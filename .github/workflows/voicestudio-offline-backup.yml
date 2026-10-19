@@ -1,0 +1,198 @@
+name: Build VoiceStudio offline backup
+
+on:
+  push:
+    branches:
+      - "backup/voicestudio-20261019"
+    paths:
+      - ".github/workflows/voicestudio-offline-backup.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: voicestudio-offline-backup-20261019
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: "voicestudio-offline-20261019"
+  BACKUP_DATE: "20261019"
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or reuse draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Reusing existing draft/retry release."
+          else
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft               --title "VoiceStudio offline backup — 2026-10-19"               --notes "Windows-focused preservation snapshot. Source mirrors include upstream main and stable v0.5.6; model weights are intentionally not bundled."
+          fi
+
+  source-mirror:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "backup/voicestudio-20261019"
+      - name: Ensure Git LFS
+        run: |
+          git lfs version || (sudo apt-get update && sudo apt-get install -y git-lfs)
+      - name: Build source mirror bundle
+        run: bash .github/backup/Build-VoiceStudio-Source.sh
+      - name: Upload source assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for f in backup-output-source/*; do
+            gh release upload "$RELEASE_TAG" "$f" --repo "$GITHUB_REPOSITORY" --clobber
+          done
+
+  stable-windows-release:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Download and verify official v0.5.6 Windows release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p stable
+          gh release download v0.5.6 --repo debpalash/VoiceStudio --dir stable             --pattern "VoiceStudio-Electron-0.5.6-win-x64.exe"             --pattern "VoiceStudio-Electron-0.5.6-win-x64.exe.blockmap"             --pattern "electron-stable-win32-x64.yml"             --pattern "SHA256SUMS.txt"             --pattern "latest.json"             --pattern "latest-user.json"
+
+          cat > stable/EXPECTED_SHA256.txt <<'EOF'
+          3d7ac1d6b54e7854ca7fff4dda838e402d1c5d31acc9656b1838432e29a97624  VoiceStudio-Electron-0.5.6-win-x64.exe
+          6c15b69b32dc74e4f4324030e713f7edf5dcd90044a6d876206c9183c48426a0  VoiceStudio-Electron-0.5.6-win-x64.exe.blockmap
+          7fec6446c15aaa01cb5de3ca8fb06dc4cfcf61eb4d7955ba93405179f8a20f8d  electron-stable-win32-x64.yml
+          cfa285ae25a86d325702b1930080aabfec805125cff6feb1ec362fb9df39888d  SHA256SUMS.txt
+          9d3fd7837771b8f2bcc8f51b73f7b559a3bd15383cc0c03e1ebc66c2bd60f52a  latest.json
+          7d25fe41c4f1d3082e960f31d5f2497cbdce08efd144d782e9d59bc5dcf06f53  latest-user.json
+          EOF
+          (cd stable && sha256sum -c EXPECTED_SHA256.txt)
+          grep -i "3d7ac1d6b54e7854ca7fff4dda838e402d1c5d31acc9656b1838432e29a97624.*VoiceStudio-Electron-0.5.6-win-x64.exe" stable/SHA256SUMS.txt
+
+          cat > stable/UPSTREAM_RELEASE_METADATA.json <<'EOF'
+          {
+            "schemaVersion": 1,
+            "release": "v0.5.6",
+            "publishedAt": "2026-09-23T08:53:32Z",
+            "tagObject": "e99127fbc759760311932cd465ae751c0370cbe9",
+            "commit": "3915a62cb482bb43117aaebab57d22745bd1cc21",
+            "scope": "official Windows x64 Electron release assets and updater metadata"
+          }
+          EOF
+          tar -C stable -czf VoiceStudio-v0.5.6-Windows-x64-Release-20261019.tar.gz .
+          sha256sum VoiceStudio-v0.5.6-Windows-x64-Release-20261019.tar.gz > VoiceStudio-v0.5.6-Windows-x64-Release-20261019.tar.gz.sha256
+
+      - name: Upload stable Windows release bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG"             VoiceStudio-v0.5.6-Windows-x64-Release-20261019.tar.gz             VoiceStudio-v0.5.6-Windows-x64-Release-20261019.tar.gz.sha256             stable/UPSTREAM_RELEASE_METADATA.json             --repo "$GITHUB_REPOSITORY" --clobber
+
+  windows-toolchain:
+    needs: prepare-release
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "backup/voicestudio-20261019"
+      - name: Build Windows runtime/toolchain bundle
+        shell: pwsh
+        run: |
+          & ".github/backup/Build-VoiceStudio-Toolchain.ps1" -BackupDate "$env:BACKUP_DATE"
+      - name: Upload toolchain assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Get-ChildItem "backup-output-toolchain" -File | ForEach-Object {
+            gh release upload "$env:RELEASE_TAG" $_.FullName --repo "$env:GITHUB_REPOSITORY" --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Upload failed: $($_.Name)" }
+          }
+
+  finalize:
+    needs: [source-mirror, stable-windows-release, windows-toolchain]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Round-trip all assets and produce final index
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir snapshot
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir snapshot
+
+          python - <<'PY'
+          import hashlib, json, pathlib
+          root = pathlib.Path("snapshot")
+          assets = []
+          for p in sorted(root.iterdir()):
+              if not p.is_file():
+                  continue
+              h = hashlib.sha256()
+              with p.open("rb") as f:
+                  for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+                      h.update(chunk)
+              assets.append({"name": p.name, "bytes": p.stat().st_size, "sha256": h.hexdigest()})
+          index = {
+              "schemaVersion": 1,
+              "date": "2026-10-19",
+              "upstream": "debpalash/VoiceStudio",
+              "currentMain": {"version": "0.5.7", "commit": "d819ff54d93017bf4a5b34b605833162163c9e3c"},
+              "latestStable": {"version": "0.5.6", "commit": "3915a62cb482bb43117aaebab57d22745bd1cc21"},
+              "scope": {
+                  "source": "complete Git/LFS mirrors for VoiceStudio and omnivoice-gallery plus convenient snapshots",
+                  "windowsStable": "official v0.5.6 Windows x64 installer and update metadata",
+                  "windowsToolchain": "Bun 1.4.2, uv 0.12.13, Node 22 LTS snapshot, uv-managed CPython 3.11",
+                  "notIncluded": [
+                      "Hugging Face/model weights",
+                      "complete Python wheel/cache closure",
+                      "Rust/MSVC build toolchains",
+                      "FFmpeg binaries",
+                      "optional cloud services or credentials"
+                  ]
+              },
+              "assets": assets
+          }
+          pathlib.Path("FULL_BACKUP_INDEX-VoiceStudio.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
+          PY
+
+          (cd snapshot && sha256sum * > ../FULL_SHA256SUMS-VoiceStudio.txt)
+
+          cat > BACKUP_REPORT-VoiceStudio.md <<'EOF'
+          # VoiceStudio offline preservation snapshot — 2026-10-19
+
+          This backup does not modify the repository's main branch. Automation lives on the backup/voicestudio-20261019 branch.
+
+          Preserved:
+          - complete upstream Git mirror and Git LFS objects
+          - omnivoice-gallery submodule mirror
+          - current upstream main, declared 0.5.7, commit d819ff54d93017bf4a5b34b605833162163c9e3c
+          - latest stable v0.5.6, commit 3915a62cb482bb43117aaebab57d22745bd1cc21
+          - official stable Windows x64 installer/update metadata with upstream SHA-256 checks
+          - Bun 1.4.2, uv 0.12.13, a concrete Node 22 LTS Windows runtime and uv-managed CPython 3.11
+
+          Important limit: VoiceStudio is a model manager/studio. The application can reference many third-party model repositories. This snapshot intentionally does not redistribute those model weights or claim their licenses permit redistribution. The model catalog, license inventory, uv.lock and bun.lock are preserved inside the source bundle so exact references remain inspectable.
+          EOF
+
+          gh release upload "$RELEASE_TAG" FULL_BACKUP_INDEX-VoiceStudio.json FULL_SHA256SUMS-VoiceStudio.txt BACKUP_REPORT-VoiceStudio.md --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false             --notes "VoiceStudio preservation snapshot. Includes complete Git/LFS source mirrors, stable v0.5.6 Windows installer assets, and pinned Windows runtime/toolchain components. Current upstream main (0.5.7 development line) is also preserved. Model weights are intentionally excluded; see BACKUP_REPORT-VoiceStudio.md."
